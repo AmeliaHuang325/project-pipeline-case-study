@@ -1,0 +1,57 @@
+# Twice-weekly backup: ping the database (keeps the free tier active), export
+# tables to CSV, and upload the folder to Google Drive with rclone.
+
+name: Database backup to Google Drive
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"   # Monday 03:00 UTC
+    - cron: "0 3 * * 4"   # Thursday 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+      SUPABASE_DB_PORT: ${{ secrets.SUPABASE_DB_PORT }}
+      SUPABASE_DB_NAME: ${{ secrets.SUPABASE_DB_NAME }}
+      SUPABASE_DB_USER: ${{ secrets.SUPABASE_DB_USER }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_DB_SSLMODE: require
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Keep database active
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD="$SUPABASE_DB_PASSWORD" psql \
+            -h "$SUPABASE_DB_HOST" -p "$SUPABASE_DB_PORT" \
+            -U "$SUPABASE_DB_USER" -d "$SUPABASE_DB_NAME" \
+            -c "SELECT 1;"
+
+      - uses: r-lib/actions/setup-r@v2
+
+      - name: Install R packages
+        run: install.packages(c("DBI", "RPostgres", "readr"))
+        shell: Rscript {0}
+
+      - name: Export tables to CSV
+        run: Rscript snippets/06_export_tables.R
+
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone from secret
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf
+
+      - name: Upload newest backup folder
+        run: |
+          LATEST_DIR=$(ls -td backup_*/ | head -n 1 | tr -d '/')
+          rclone copy "$LATEST_DIR" "gdrive:database_backups/$LATEST_DIR/"
